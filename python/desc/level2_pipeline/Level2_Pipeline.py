@@ -9,13 +9,39 @@ subdirectories.
 import os
 import sys
 import logging
+import sqlite3
 from collections import OrderedDict
 import subprocess
-from desc.twinkles import get_visits
 
 __all__ = ['ingestImages', 'getVisits', 'Level2_Pipeline']
 
 logging.basicConfig()
+
+def find_registry(data_repo, registry_name='registry.sqlite3'):
+    basePath = data_repo
+    while not os.path.exists(os.path.join(basePath, registry_name)):
+        if os.path.exists(os.path.join(basePath, "_parent")):
+            basePath = os.path.join(basePath, "_parent")
+        else:
+            raise RuntimeError("Could not find registry file")
+    return os.path.join(basePath, registry_name)
+
+def get_visits(data_repo):
+    """
+    Return a dictionary of visits ids keyed by 'ugrizy' filter.
+    data_repo is the output repository of the Twinkles Level 2
+    pipeline.
+    """
+    registry_file = find_registry(data_repo)
+    conn = sqlite3.connect(registry_file)
+    filters = 'ugrizy'
+    visits = OrderedDict([(filter_, []) for filter_ in filters])
+    for filter_ in filters:
+        query = "select visit from raw_visit where filter='%s'" % filter_
+        for row in conn.execute(query):
+            visits[filter_].append(row[0])
+
+    return visits
 
 def coadd_id(band):
     return 'filter=%s patch=0,0 tract=0' % band
@@ -27,8 +53,10 @@ def ingestImages(phosim_dir, image_repo, pattern='lsst_*.fits.gz', logger=None):
     """
     if logger is None:
         logger = logging.getLogger()
-    command = 'ingestImages.py %(phosim_dir)s %(phosim_dir)s/%(pattern)s --mode link --output %(image_repo)s --doraise --clobber-config' % locals()
+    command = 'ingestSimImages.py %(phosim_dir)s %(phosim_dir)s/%(pattern)s --mode link --output %(image_repo)s --doraise --clobber-config' % locals()
     logger.info("running:\n  " + command)
+    print(command)
+    sys.stdout.flush()
     subprocess.call(command, shell=True)
 
 def getVisits(image_repo):
@@ -128,7 +156,7 @@ class Level2_Pipeline(object):
         try:
             subprocess.check_call(command, shell=True)
         except subprocess.CalledProcessError as eobj:
-            self.failures['makeDiscreteSkyMap'] = {all_visits : eobs}
+            self.failures['makeDiscreteSkyMap'] = {all_visits : eobj}
 
     def run_makeCoaddTempExp(self, dry_run):
         "Run makeCoaddTempExp.py on all visits."
