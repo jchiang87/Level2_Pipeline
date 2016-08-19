@@ -8,12 +8,13 @@ subdirectories.
 """
 import os
 import sys
+import glob
 import logging
 import sqlite3
 from collections import OrderedDict
 import subprocess
 
-__all__ = ['ingestImages', 'getVisits', 'Level2_Pipeline']
+__all__ = ['ingestImages', 'getVisits', 'find_patches', 'Level2_Pipeline']
 
 logging.basicConfig()
 
@@ -43,8 +44,8 @@ def get_visits(data_repo):
 
     return visits
 
-def coadd_id(band):
-    return 'filter=%s patch=0,0 tract=0' % band
+def coadd_id(band, tract='0'):
+    return 'filter=%s tract=%s' % (band, tract)
 
 def ingestImages(phosim_dir, image_repo, pattern='lsst_*.fits.gz', logger=None):
     """
@@ -67,8 +68,31 @@ def getVisits(image_repo):
     """
     visits = get_visits(image_repo)
     visits = OrderedDict([(band, '^'.join([str(x) for x in vals]))
-                          for band, vals in visits.items()])
+                          for band, vals in visits.items() if vals])
     return visits
+
+def find_patches(output_repo, visits):
+    """
+    Find tracts and patches created by the makeCoaddTempExp.py task.
+    """
+    deepCoadd_dir = os.path.abspath(os.path.join(output_repo, 'deepCoadd'))
+    patches = {}
+    for band in visits:
+        band_dir = os.path.join(deepCoadd_dir, band)
+        if not os.path.isdir(band_dir):
+            continue
+        tracts = [os.path.basename(x) for x in
+                  glob.glob(os.path.join(band_dir, '*')) if os.path.isdir(x)]
+        if not tracts:
+            continue
+        patches[band] = {}
+        for tract in tracts:
+            tract_dir = os.path.join(band_dir, tract)
+            patches[band][tract] = [os.path.basename(x)[:-len('tempExp')]
+                                    for x in glob.glob(os.path.join(tract_dir,
+                                                                    '*tempExp'))
+                                    if os.path.isdir(x)]
+    return patches
 
 class Level2_Pipeline(object):
     """
@@ -89,7 +113,8 @@ class Level2_Pipeline(object):
         self.logger = logging.getLogger()
         self.logger.setLevel(logger_level)
         self.failures = OrderedDict()
-        self.all_visits = '^'.join(visits.values())
+        self.all_visits = '^'.join([value for value in visits.values()
+                                    if value !=''])
         self._generate_methods()
 
     def run(self, dry_run=False):
@@ -183,18 +208,21 @@ class Level2_Pipeline(object):
         output = self.output_repo
         pipe_task_options = self.pipe_task_options
         failures = OrderedDict()
+        patches = find_patches(output, self.visits)
         for filt in self.visits:
             visits = self.visits[filt]
-            command = ('assembleCoadd.py %(output)s/ --selectId visit=%(visits)s --id '
-                       + coadd_id(filt)
-                       + ' --config doInterp=True --output %(output)s %(pipe_task_options)s') % locals()
-            self.logger.info('running:\n  ' + command)
-            if dry_run:
-                continue
-            try:
-                subprocess.check_call(command, shell=True)
-            except subprocess.CalledProcessError as eobj:
-                failures[visits] = eobj
+            for tract, patch_list in patches[filt].items():
+                for patch in patch_list:
+                    command = ('assembleCoadd.py %(output)s/ --selectId visit=%(visits)s --id '
+                               + 'filter=%(filt)s patch=%(patch)s tract=%(tract)s'
+                               + ' --config doInterp=True --output %(output)s %(pipe_task_options)s') % locals()
+                    self.logger.info('running:\n  ' + command)
+                    if dry_run:
+                        continue
+                    try:
+                        subprocess.check_call(command, shell=True)
+                    except subprocess.CalledProcessError as eobj:
+                        failures[visits] = eobj
         if failures:
             self.failures['assembleCoadd'] = failures
 
