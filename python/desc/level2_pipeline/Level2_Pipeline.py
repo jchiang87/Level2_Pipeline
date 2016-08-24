@@ -1,20 +1,24 @@
 #!/usr/bin/env python
 """
 This needs to be run in a bash environment where
-$ setup obs_lsstSim
+
 $ setup -m none -r and_files astrometry_net_data
-have been run and which contains an images/ and and_files/
+
+has been run and which contains an images/ and and_files/
 subdirectories.
 """
 import os
 import sys
 import glob
+import itertools
 import logging
+import pickle
 import sqlite3
 from collections import OrderedDict
 import subprocess
 
-__all__ = ['ingestImages', 'getVisits', 'find_patches', 'Level2_Pipeline']
+__all__ = ['ingest_images', 'get_patches', 'get_sensors', 'get_visits',
+           'Level2_Pipeline']
 
 logging.basicConfig()
 
@@ -27,27 +31,24 @@ def find_registry(data_repo, registry_name='registry.sqlite3'):
             raise RuntimeError("Could not find registry file")
     return os.path.join(basePath, registry_name)
 
-def get_visits(data_repo):
+def get_sensors(image_repo):
     """
-    Return a dictionary of visits ids keyed by 'ugrizy' filter.
-    data_repo is the output repository of the Twinkles Level 2
-    pipeline.
+    Return a list of sensors identified by raft, ccd, e.g.,
+    [('2,2', '1,1')].
     """
-    registry_file = find_registry(data_repo)
+    registry_file = find_registry(image_repo)
     conn = sqlite3.connect(registry_file)
-    filters = 'ugrizy'
-    visits = OrderedDict([(filter_, []) for filter_ in filters])
-    for filter_ in filters:
-        query = "select visit from raw_visit where filter='%s'" % filter_
-        for row in conn.execute(query):
-            visits[filter_].append(row[0])
-
-    return visits
+    query = "select distinct raft, ccd from raw"
+    sensors = []
+    for row in conn.execute(query):
+        sensors.append(tuple(row))
+    return sensors
 
 def coadd_id(band, tract='0'):
     return 'filter=%s tract=%s' % (band, tract)
 
-def ingestImages(phosim_dir, image_repo, pattern='lsst_*.fits.gz', logger=None):
+def ingest_images(phosim_dir, image_repo, pattern='lsst_*.fits.gz',
+                  logger=None):
     """
     Run obs_lsstSim/bin/ingestImages.py in order to set up the initial
     image repository for the phosim data.
@@ -60,38 +61,36 @@ def ingestImages(phosim_dir, image_repo, pattern='lsst_*.fits.gz', logger=None):
     sys.stdout.flush()
     subprocess.call(command, shell=True)
 
-def getVisits(image_repo):
+def get_visits(image_repo):
     """
     Extract the visit per band info from the registry.sqlite3 db in
     the image repository and repackage the lists of visits for feeding
     directly to the Level 2 pipe tasks.
     """
-    visits = get_visits(image_repo)
+    registry_file = find_registry(image_repo)
+    conn = sqlite3.connect(registry_file)
+    filters = 'ugrizy'
+    visits = OrderedDict([(filter_, []) for filter_ in filters])
+    for filter_ in filters:
+        query = "select visit from raw_visit where filter='%s'" % filter_
+        for row in conn.execute(query):
+            visits[filter_].append(row[0])
     visits = OrderedDict([(band, '^'.join([str(x) for x in vals]))
                           for band, vals in visits.items() if vals])
     return visits
 
-def find_patches(output_repo, visits):
+def get_patches(output_repo):
     """
-    Find tracts and patches created by the makeCoaddTempExp.py task.
+    Get tracts and patches from the <repo>/deepCoadd/skyMap.pickle file.
     """
     deepCoadd_dir = os.path.abspath(os.path.join(output_repo, 'deepCoadd'))
+    with open(os.path.join(deepCoadd_dir, 'skyMap.pickle')) as f:
+        skymap = pickle.load(f)
     patches = {}
-    for band in visits:
-        band_dir = os.path.join(deepCoadd_dir, band)
-        if not os.path.isdir(band_dir):
-            continue
-        tracts = [os.path.basename(x) for x in
-                  glob.glob(os.path.join(band_dir, '*')) if os.path.isdir(x)]
-        if not tracts:
-            continue
-        patches[band] = {}
-        for tract in tracts:
-            tract_dir = os.path.join(band_dir, tract)
-            patches[band][tract] = [os.path.basename(x)[:-len('tempExp')]
-                                    for x in glob.glob(os.path.join(tract_dir,
-                                                                    '*tempExp'))
-                                    if os.path.isdir(x)]
+    for tract_info in skymap:
+        nx, ny = [tract_info.getNumPatches()[i] for i in (0, 1)]
+        patches[tract_info.getId()] = ('%i,%i' % x for x in
+                                       itertools.product(range(nx), range(ny)))
     return patches
 
 class Level2_Pipeline(object):
@@ -208,14 +207,12 @@ class Level2_Pipeline(object):
         output = self.output_repo
         pipe_task_options = self.pipe_task_options
         failures = OrderedDict()
-        patches = find_patches(output, self.visits)
+        patches = get_patches(output)
         for filt in self.visits:
             visits = self.visits[filt]
-            for tract, patch_list in patches[filt].items():
+            for tract, patch_list in patches.items():
                 for patch in patch_list:
-                    command = ('assembleCoadd.py %(output)s/ --selectId visit=%(visits)s --id '
-                               + 'filter=%(filt)s patch=%(patch)s tract=%(tract)s'
-                               + ' --config doInterp=True --output %(output)s %(pipe_task_options)s') % locals()
+                    command = "assembleCoadd.py %(output)s/ --selectId visit=%(visits)s --id filter=%(filt)s patch=%(patch)s tract=%(tract)s --config doInterp=True --output %(output)s %(pipe_task_options)s" % locals()
                     self.logger.info('running:\n  ' + command)
                     if dry_run:
                         continue
@@ -226,19 +223,20 @@ class Level2_Pipeline(object):
         if failures:
             self.failures['assembleCoadd'] = failures
 
-    def run_forcedPhotCcd(self, dry_run=False, raft='2,2', sensor='1,1'):
+    def run_forcedPhotCcd(self, dry_run=False):
         "Run forcedPhotCcd.py"
         output = self.output_repo
         all_visits = self.all_visits
         pipe_task_options = self.pipe_task_options
-        command = "forcedPhotCcd.py %(output)s/ --id tract=0 visit=%(all_visits)s sensor=%(sensor)s raft=%(raft)s --config measurement.doApplyApCorr='yes' --output %(output)s %(pipe_task_options)s" % locals()
-        self.logger.info('running:\n  ' + command)
-        if dry_run:
-            return
-        try:
-            subprocess.check_call(command, shell=True)
-        except subprocess.CalledProcessError as eobj:
-            self.failures['forcedPhotCcd'] = {all_visits : eobj}
+        for raft, sensor in get_sensors(output):
+            command = "forcedPhotCcd.py %(output)s/ --id tract=0 visit=%(all_visits)s sensor=%(sensor)s raft=%(raft)s --config measurement.doApplyApCorr='yes' --output %(output)s %(pipe_task_options)s" % locals()
+            self.logger.info('running:\n  ' + command)
+            if dry_run:
+                continue
+            try:
+                subprocess.check_call(command, shell=True)
+            except subprocess.CalledProcessError as eobj:
+                self.failures['forcedPhotCcd'] = {all_visits : eobj}
 
     def run_measureCoaddSources(self, dry_run=False, raft='2,2', sensor='1,1'):
         "Run measureCoaddSources.py"
@@ -267,8 +265,8 @@ if __name__ == '__main__':
     image_repo = 'image_repo'
     output_repo = 'output_repo'
 
-    ingestImages(phosim_dir, image_repo)
-    visits = getVisits(image_repo)
+    ingest_images(phosim_dir, image_repo)
+    visits = get_visits(image_repo)
     l2 = Level2_Pipeline(image_repo, output_repo, visits)
     l2.run(dry_run=False)
     l2.report_failures()
