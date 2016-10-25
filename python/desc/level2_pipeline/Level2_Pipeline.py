@@ -150,7 +150,7 @@ class Level2_Pipeline(object):
         run_pipe_task.__name__ = 'run_%s' % pipe_task
         setattr(self.__class__, run_pipe_task.__name__, run_pipe_task)
 
-    def run_processEimage(self, dry_run=False):
+    def run_processEimage(self, dry_run=False, config_options=None):
         "Run processEimage.py on all of the visits."
         failures = OrderedDict()
         for visit in self.all_visits.split('^'):
@@ -158,6 +158,8 @@ class Level2_Pipeline(object):
             output_repo = self.output_repo
             options = self.pipe_task_options
             command = 'processEimage.py %(image_repo)s/ --id visit=%(visit)s --output %(output_repo)s %(options)s' % locals()
+            if config_options is not None:
+                command += ' --config %s' % config_options
             self.logger.info('running:\n  ' + command)
             if dry_run:
                continue
