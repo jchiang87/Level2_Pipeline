@@ -231,7 +231,7 @@ class Level2_Pipeline(object):
         all_visits = self.all_visits
         pipe_task_options = self.pipe_task_options
         for raft, sensor in get_sensors(output):
-            command = "forcedPhotCcd.py %(output)s/ --id tract=0 visit=%(all_visits)s sensor=%(sensor)s raft=%(raft)s --config measurement.doApplyApCorr='yes' --output %(output)s %(pipe_task_options)s" % locals()
+            command = "forcedPhotCcd.py %(output)s/ --id tract=0 visit=%(all_visits)s sensor=%(sensor)s raft=%(raft)s --output %(output)s %(pipe_task_options)s" % locals()
             self.logger.info('running:\n  ' + command)
             if dry_run:
                 continue
@@ -246,7 +246,7 @@ class Level2_Pipeline(object):
         all_visits = self.all_visits
         pipe_task_options = self.pipe_task_options
         my_coadd_id = coadd_id('^'.join(self.visits.keys()))
-        command = "measureCoaddSources.py %(output)s/ --id %(my_coadd_id)s --config measurement.doApplyApCorr='yes' --output %(output)s %(pipe_task_options)s" % locals()
+        command = "measureCoaddSources.py %(output)s/ --id %(my_coadd_id)s --output %(output)s %(pipe_task_options)s" % locals()
         self.logger.info('running:\n  ' + command)
         if dry_run:
             return
