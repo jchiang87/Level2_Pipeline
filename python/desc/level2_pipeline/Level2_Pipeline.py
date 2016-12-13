@@ -55,7 +55,7 @@ def ingest_images(phosim_dir, image_repo, pattern='lsst_*.fits.gz',
     """
     if logger is None:
         logger = logging.getLogger()
-    command = 'ingestSimImages.py %(phosim_dir)s %(phosim_dir)s/%(pattern)s --mode link --output %(image_repo)s --doraise --clobber-config' % locals()
+    command = 'ingestSimImages.py %(phosim_dir)s %(phosim_dir)s/%(pattern)s --mode link --output %(image_repo)s --doraise --clobber-config --clobber-versions' % locals()
     logger.info("running:\n  " + command)
     print(command)
     sys.stdout.flush()
@@ -89,8 +89,8 @@ def get_patches(output_repo):
     patches = {}
     for tract_info in skymap:
         nx, ny = [tract_info.getNumPatches()[i] for i in (0, 1)]
-        patches[tract_info.getId()] = ('%i,%i' % x for x in
-                                       itertools.product(range(nx), range(ny)))
+        patches[tract_info.getId()] = ['%i,%i' % x for x in
+                                       itertools.product(range(nx), range(ny))]
     return patches
 
 class Level2_Pipeline(object):
@@ -98,7 +98,7 @@ class Level2_Pipeline(object):
     Class to manage Level 2 pipeline execution run serially on a data repo.
     """
     def __init__(self, image_repo, output_repo, visits,
-                 pipe_task_options="--doraise --clobber-config",
+                 pipe_task_options="--doraise --clobber-config --clobber-versions",
                  logger_level=logging.INFO):
         """
         image_repo: directory with ingested phosim images
